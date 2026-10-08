@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fairwork — Freelance Escrow MVP</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="brand">Fairwork</div>
+      <div class="tagline">Freelance payments, protected by escrow</div>
+    </div>
+    <div class="top-actions">
+      <span id="modeBadge" class="badge">Demo Mode</span>
+      <button id="connectBtn" class="primary">Connect Wallet</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">BLOCKCHAIN FREELANCE ESCROW</p>
+        <h1>Complete the work. Approve the milestone. Release the payment.</h1>
+        <p class="hero-copy">Fairwork keeps milestone payments in escrow until the agreed work is approved. This MVP supports project creation, milestone funding, work submission, approval, and disputes.</p>
+      </div>
+      <div class="hero-card">
+        <div class="hero-card-label">Connected wallet</div>
+        <div id="walletAddress" class="wallet-address">Not connected</div>
+        <div class="small">Demo mode stores activity in your browser. Web3 mode uses the deployed contract configured in <code>app.js</code>.</div>
+      </div>
+    </section>
+
+    <section class="stats-grid">
+      <div class="stat-card"><div class="stat-label">Projects</div><div id="statProjects" class="stat-value">0</div></div>
+      <div class="stat-card"><div class="stat-label">Funded milestones</div><div id="statFunded" class="stat-value">0</div></div>
+      <div class="stat-card"><div class="stat-label">Awaiting review</div><div id="statReview" class="stat-value">0</div></div>
+      <div class="stat-card"><div class="stat-label">Completed payouts</div><div id="statPaid" class="stat-value">0</div></div>
+    </section>
+
+    <section class="layout">
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <div class="section-kicker">CLIENT</div>
+            <h2>Create a project</h2>
+          </div>
+        </div>
+        <form id="projectForm" class="form">
+          <label>Project title<input id="projectTitle" required placeholder="E-commerce website" /></label>
+          <label>Freelancer wallet<input id="freelancerAddress" required placeholder="0x..." /></label>
+          <label>Milestones <span class="muted">(one per line: Title | Amount in ETH)</span>
+            <textarea id="milestonesInput" rows="7" required placeholder="Wireframe | 0.01\nFrontend | 0.02\nFinal Website | 0.03"></textarea>
+          </label>
+          <button class="primary wide" type="submit">Create Project</button>
+          <div id="formError" class="error hidden"></div>
+        </form>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <div class="section-kicker">HOW IT WORKS</div>
+            <h2>Escrow lifecycle</h2>
+          </div>
+        </div>
+        <div class="flow">
+          <div><span>1</span><div><strong>Create</strong><p>Client and freelancer agree on milestones.</p></div></div>
+          <div><span>2</span><div><strong>Fund</strong><p>Client deposits the milestone amount into escrow.</p></div></div>
+          <div><span>3</span><div><strong>Submit</strong><p>Freelancer adds a work link for review.</p></div></div>
+          <div><span>4</span><div><strong>Approve</strong><p>Client approves or requests changes.</p></div></div>
+          <div><span>5</span><div><strong>Release</strong><p>Approved payment is sent to the freelancer.</p></div></div>
+          <div><span>!</span><div><strong>Dispute</strong><p>Disputed funds remain locked until resolved.</p></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="section-kicker">PROJECTS</div>
+          <h2>Milestone dashboard</h2>
+        </div>
+        <button id="seedBtn" class="secondary">Load sample project</button>
+      </div>
+      <div id="projects" class="projects"></div>
+    </section>
+
+    <section class="panel" id="arbitrationPanel">
+      <div class="panel-header">
+        <div>
+          <div class="section-kicker">ARBITRATION</div>
+          <h2>Dispute resolution</h2>
+        </div>
+      </div>
+      <div id="arbitrationCases" class="projects"></div>
+      <p class="note">In Demo Mode, arbitration is simulated for presentation. In Web3 Mode, only the configured arbitrator wallet can resolve an on-chain dispute.</p>
+    </section>
+
+    <section class="panel technical">
+      <div class="panel-header">
+        <div>
+          <div class="section-kicker">WEB3 STATUS</div>
+          <h2>Contract configuration</h2>
+        </div>
+      </div>
+      <div class="tech-grid">
+        <div><span>Network</span><strong id="networkLabel">Demo / Not connected</strong></div>
+        <div><span>Contract</span><strong id="contractLabel">Not configured</strong></div>
+        <div><span>Payment asset</span><strong>Native ETH in this MVP</strong></div>
+      </div>
+      <p class="note">This build is connected to the deployed Sepolia ETH escrow contract. Demo Mode remains available for UI testing; Web3 Mode requires MetaMask on Sepolia and a separate freelancer wallet.</p>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js?v=5"></script>
+</body>
+</html>

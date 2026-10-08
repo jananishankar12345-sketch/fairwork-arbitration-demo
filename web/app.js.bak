@@ -1,0 +1,325 @@
+const CONFIG = {
+  contractAddress: "",
+  contractAbi: [],
+  chainId: "0xaa36a7", // Sepolia
+};
+
+const STORAGE_KEY = "fairwork-mvp-v1";
+let state = loadState();
+let web3 = { provider: null, signer: null, contract: null, address: null };
+
+function loadState() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    return saved && Array.isArray(saved.projects) ? saved : { projects: [] };
+  } catch {
+    return { projects: [] };
+  }
+}
+
+function saveState() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function uid(prefix = "id") {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function esc(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function shortenAddress(address) {
+  if (!address) return "Not connected";
+  return address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address;
+}
+
+function totalAmount(project) {
+  return project.milestones.reduce((sum, m) => sum + Number(m.amount || 0), 0);
+}
+
+function getStatus(m) {
+  if (m.disputed) return ["Dispute", "dispute"];
+  if (m.paid) return ["Paid", "paid"];
+  if (m.submitted) return ["Awaiting review", "review"];
+  if (m.funded) return ["Funded", "funded"];
+  return ["Awaiting funding", ""];
+}
+
+function render() {
+  const projectsEl = document.getElementById("projects");
+  if (!state.projects.length) {
+    projectsEl.innerHTML = `<div class="empty">No projects yet. Create one above or load the sample project.</div>`;
+  } else {
+    projectsEl.innerHTML = state.projects.map(project => `
+      <article class="project-card">
+        <div class="project-top">
+          <div>
+            <h3 class="project-title">${esc(project.title)}</h3>
+            <div class="project-meta">Freelancer: ${esc(shortenAddress(project.freelancer))}</div>
+          </div>
+          <div class="project-total">${totalAmount(project).toFixed(4)} ETH</div>
+        </div>
+        <div class="milestones">
+          ${project.milestones.map((m, index) => {
+            const [label, cls] = getStatus(m);
+            return `
+              <div class="milestone">
+                <div class="milestone-head">
+                  <div>
+                    <div class="milestone-title">${index + 1}. ${esc(m.title)}</div>
+                    <div class="project-meta">${Number(m.amount).toFixed(4)} ETH</div>
+                  </div>
+                  <div class="status ${cls}"><span class="dot"></span>${label}</div>
+                </div>
+                ${m.workLink ? `<div class="project-meta">Work: <a href="${esc(m.workLink)}" target="_blank" rel="noreferrer">${esc(m.workLink)}</a></div>` : ""}
+                ${m.disputeNote ? `<div class="project-meta">Dispute: ${esc(m.disputeNote)}</div>` : ""}
+                <div class="milestone-actions">
+                  ${!m.funded && !m.paid ? `<button class="dark" onclick="fundMilestone('${project.id}','${m.id}')">Fund Escrow</button>` : ""}
+                  ${m.funded && !m.submitted && !m.disputed && !m.paid ? `<button onclick="submitWork('${project.id}','${m.id}')">Submit Work</button>` : ""}
+                  ${m.submitted && !m.approved && !m.disputed ? `<button class="dark" onclick="approveMilestone('${project.id}','${m.id}')">Approve & Release</button>` : ""}
+                  ${m.submitted && !m.approved && !m.disputed ? `<button onclick="requestChanges('${project.id}','${m.id}')">Request Changes</button>` : ""}
+                  ${m.funded && !m.paid && !m.disputed ? `<button onclick="raiseDispute('${project.id}','${m.id}')">Dispute</button>` : ""}
+                </div>
+              </div>`;
+          }).join("")}
+        </div>
+      </article>`).join("");
+  }
+
+  const milestones = state.projects.flatMap(p => p.milestones);
+  document.getElementById("statProjects").textContent = state.projects.length;
+  document.getElementById("statFunded").textContent = milestones.filter(m => m.funded && !m.paid).length;
+  document.getElementById("statReview").textContent = milestones.filter(m => m.submitted && !m.approved && !m.disputed).length;
+  document.getElementById("statPaid").textContent = milestones.filter(m => m.paid).length;
+
+  document.getElementById("contractLabel").textContent = CONFIG.contractAddress || "Not configured";
+  document.getElementById("modeBadge").textContent = web3.contract ? "Web3 Mode" : "Demo Mode";
+}
+
+function notify(message) {
+  const toast = document.getElementById("toast");
+  toast.textContent = message;
+  toast.classList.remove("hidden");
+  clearTimeout(window.__toastTimer);
+  window.__toastTimer = setTimeout(() => toast.classList.add("hidden"), 3200);
+}
+
+function setError(message) {
+  const box = document.getElementById("formError");
+  box.textContent = message;
+  box.classList.toggle("hidden", !message);
+}
+
+function parseMilestones(raw) {
+  return raw.split("\n").map(line => line.trim()).filter(Boolean).map(line => {
+    const parts = line.split("|").map(x => x.trim());
+    if (parts.length !== 2) throw new Error(`Invalid milestone: ${line}`);
+    const [title, amount] = parts;
+    const number = Number(amount);
+    if (!title || !Number.isFinite(number) || number <= 0) throw new Error(`Invalid milestone amount: ${line}`);
+    return { id: uid("ms"), title, amount: number, funded: false, submitted: false, approved: false, paid: false, disputed: false, workLink: "", disputeNote: "" };
+  });
+}
+
+async function connectWallet() {
+  if (!window.ethereum) {
+    notify("MetaMask is not installed. Demo Mode is still available.");
+    return;
+  }
+
+  try {
+    const ethers = await loadEthers();
+    web3.provider = new ethers.BrowserProvider(window.ethereum);
+    web3.signer = await web3.provider.getSigner();
+    web3.address = await web3.signer.getAddress();
+    document.getElementById("walletAddress").textContent = web3.address;
+
+    const network = await web3.provider.getNetwork();
+    const hexChain = `0x${network.chainId.toString(16)}`;
+    document.getElementById("networkLabel").textContent = network.name ? `${network.name} (${network.chainId})` : String(network.chainId);
+
+    if (CONFIG.contractAddress && CONFIG.contractAbi.length) {
+      web3.contract = new ethers.Contract(CONFIG.contractAddress, CONFIG.contractAbi, web3.signer);
+      notify("Wallet connected. Web3 mode is ready.");
+    } else {
+      notify("Wallet connected, but contract address/ABI is not configured yet.");
+    }
+    render();
+  } catch (error) {
+    console.error(error);
+    notify(error?.message || "Wallet connection failed.");
+  }
+}
+
+async function loadEthers() {
+  if (window.ethers) return window.ethers;
+  await new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/ethers@6.15.0/dist/ethers.umd.min.js";
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("Could not load ethers.js"));
+    document.head.appendChild(script);
+  });
+  return window.ethers;
+}
+
+async function fundMilestone(projectId, milestoneId) {
+  const project = state.projects.find(p => p.id === projectId);
+  const milestone = project?.milestones.find(m => m.id === milestoneId);
+  if (!project || !milestone) return;
+
+  if (web3.contract) {
+    try {
+      const ethers = await loadEthers();
+      if (web3.contract.fundMilestone) {
+        const tx = await web3.contract.fundMilestone(project.onChainId, milestone.onChainId, { value: ethers.parseEther(String(milestone.amount)) });
+        notify(`Transaction submitted: ${tx.hash.slice(0, 10)}…`);
+        await tx.wait();
+        notify("Escrow funded on-chain.");
+      } else {
+        throw new Error("fundMilestone function is not present in the configured ABI.");
+      }
+    } catch (error) {
+      console.error(error);
+      notify(error?.shortMessage || error?.message || "Escrow funding failed.");
+      return;
+    }
+  }
+
+  milestone.funded = true;
+  saveState();
+  render();
+}
+
+async function submitWork(projectId, milestoneId) {
+  const project = state.projects.find(p => p.id === projectId);
+  const milestone = project?.milestones.find(m => m.id === milestoneId);
+  if (!project || !milestone) return;
+
+  const link = prompt("Enter the work link (GitHub, Figma, Drive, website, etc.):", "https://example.com/work");
+  if (!link) return;
+  try { new URL(link); } catch { notify("Please enter a valid URL."); return; }
+
+  if (web3.contract) {
+    try {
+      const tx = await web3.contract.submitWork(project.onChainId, milestone.onChainId, link);
+      notify(`Transaction submitted: ${tx.hash.slice(0, 10)}…`);
+      await tx.wait();
+    } catch (error) {
+      console.error(error);
+      notify(error?.shortMessage || error?.message || "Work submission failed.");
+      return;
+    }
+  }
+
+  milestone.workLink = link;
+  milestone.submitted = true;
+  saveState();
+  render();
+  notify("Work submitted for review.");
+}
+
+async function approveMilestone(projectId, milestoneId) {
+  const project = state.projects.find(p => p.id === projectId);
+  const milestone = project?.milestones.find(m => m.id === milestoneId);
+  if (!project || !milestone) return;
+
+  if (web3.contract) {
+    try {
+      const tx = await web3.contract.approveMilestone(project.onChainId, milestone.onChainId);
+      notify(`Approval submitted: ${tx.hash.slice(0, 10)}…`);
+      await tx.wait();
+    } catch (error) {
+      console.error(error);
+      notify(error?.shortMessage || error?.message || "Approval failed.");
+      return;
+    }
+  }
+
+  milestone.approved = true;
+  milestone.paid = true;
+  saveState();
+  render();
+  notify("Milestone approved and payment released in the MVP flow.");
+}
+
+function requestChanges(projectId, milestoneId) {
+  const project = state.projects.find(p => p.id === projectId);
+  const milestone = project?.milestones.find(m => m.id === milestoneId);
+  if (!project || !milestone) return;
+  milestone.submitted = false;
+  milestone.approved = false;
+  saveState();
+  render();
+  notify("Changes requested. Freelancer can resubmit the work.");
+}
+
+function raiseDispute(projectId, milestoneId) {
+  const project = state.projects.find(p => p.id === projectId);
+  const milestone = project?.milestones.find(m => m.id === milestoneId);
+  if (!project || !milestone) return;
+  const note = prompt("Why is this milestone disputed?", "Work does not match the agreed deliverables.");
+  if (!note) return;
+  milestone.disputed = true;
+  milestone.disputeNote = note;
+  saveState();
+  render();
+  notify("Dispute raised. Payment is now shown as locked.");
+}
+
+function seedSample() {
+  if (state.projects.some(p => p.title === "E-commerce Website")) {
+    notify("Sample project is already loaded.");
+    return;
+  }
+  state.projects.unshift({
+    id: uid("project"),
+    onChainId: 1,
+    title: "E-commerce Website",
+    freelancer: "0x71A5A1A1bB4d7f3eB3D2c4A1B7cD2e1F9A8a0C11",
+    milestones: [
+      { id: uid("ms"), onChainId: 0, title: "Wireframe", amount: 0.01, funded: true, submitted: true, approved: false, paid: false, disputed: false, workLink: "https://example.com/wireframe", disputeNote: "" },
+      { id: uid("ms"), onChainId: 1, title: "Frontend", amount: 0.02, funded: true, submitted: false, approved: false, paid: false, disputed: false, workLink: "", disputeNote: "" },
+      { id: uid("ms"), onChainId: 2, title: "Final Website", amount: 0.03, funded: false, submitted: false, approved: false, paid: false, disputed: false, workLink: "", disputeNote: "" }
+    ]
+  });
+  saveState();
+  render();
+  notify("Sample project loaded.");
+}
+
+document.getElementById("projectForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  setError("");
+  try {
+    const title = document.getElementById("projectTitle").value.trim();
+    const freelancer = document.getElementById("freelancerAddress").value.trim();
+    const milestones = parseMilestones(document.getElementById("milestonesInput").value);
+    if (!title) throw new Error("Project title is required.");
+    if (!/^0x[a-fA-F0-9]{40}$/.test(freelancer)) throw new Error("Freelancer wallet must be a valid 42-character 0x address.");
+    state.projects.unshift({ id: uid("project"), title, freelancer, onChainId: null, milestones });
+    saveState();
+    render();
+    event.target.reset();
+    notify("Project created in Demo Mode.");
+  } catch (error) {
+    setError(error.message || "Could not create project.");
+  }
+});
+
+document.getElementById("connectBtn").addEventListener("click", connectWallet);
+document.getElementById("seedBtn").addEventListener("click", seedSample);
+
+window.fundMilestone = fundMilestone;
+window.submitWork = submitWork;
+window.approveMilestone = approveMilestone;
+window.requestChanges = requestChanges;
+window.raiseDispute = raiseDispute;
+
+render();

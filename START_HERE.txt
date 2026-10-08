@@ -1,0 +1,14 @@
+FAIRWORK WEB3 – START HERE
+
+1. Close any old Fairwork localhost tabs.
+2. Double-click START_WEB3.bat in this folder.
+3. It opens http://localhost:8003.
+4. Keep the black server window open.
+5. In MetaMask select Account 1 and Sepolia.
+6. In Fairwork click Connect Wallet.
+7. The badge must change from Demo Mode to Web3 Mode.
+8. The app is preconfigured for the deployed Sepolia contract:
+   0x37a55927e93f31Ba6dC7BE4f6628d115d93B88dF
+
+Do not use the old localhost:8000/8001/8002 tabs.
+Use localhost:8003 for this build.
