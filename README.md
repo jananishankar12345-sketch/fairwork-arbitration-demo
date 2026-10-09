@@ -49,6 +49,20 @@ The current contract accepts **native ETH**, not USDC. If you decide that Fairwo
 4. Approve and release payment.
 5. Raise a dispute on another funded milestone.
 
+### Demo and Web3 boundaries
+
+- Demo projects and Web3 projects have separate dashboard views. Demo projects never send contract transactions, even if they came from an older saved sample.
+- Connect Wallet opens the Web3 view. Use Demo Mode clears the app's active wallet session and returns to simulated projects. It does not revoke MetaMask permissions.
+- Disconnects, account changes, network changes and failed connections clear stale signing state. Pending actions stop if their wallet session changes before submission.
+- Request Changes is a **Demo Mode simulation only**. The deployed escrow has no revision-request function, so Web3 mode shows an explanatory message instead of changing local state and reporting success. Supporting on-chain revision requests requires a contract upgrade/redeployment and a corresponding frontend integration.
+- The three-member voting simulation has its own panel. It cannot hide or settle actual project disputes. Each arbitrator votes once, and the first two matching votes finalize the outcome until Reset voting demo.
+- To demonstrate a 2-to-1 outcome, cast Arbitrator 1 = Refund, Arbitrator 3 = Pay, then Arbitrator 2 = Refund. If the first two votes match, the case closes before the third vote.
+- Existing Web3 project metadata is preserved during migration. The frontend checks the chain, contract, project identity and caller role before submitting milestone actions. This is not a substitute for smart-contract authorization or an audit.
+
+### Regression tests
+
+Run `node --test tests/regressions.test.mjs` with Node.js 20 or newer. The tests run the actual frontend scripts with an isolated DOM, localStorage and mocked wallet/contract responses. They do not move funds or require dependencies.
+
 ## Production hardening needed before real money
 
 - Reentrancy protection / stronger payment pattern
@@ -59,3 +73,4 @@ The current contract accepts **native ETH**, not USDC. If you decide that Fairwo
 - Server-side project metadata, authentication, and authorization
 - Thorough unit/integration/security testing
 - Audited smart contract
+

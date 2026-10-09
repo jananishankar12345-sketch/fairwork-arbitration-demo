@@ -22,11 +22,74 @@ const CONFIG = {
 const STORAGE_KEY = "fairwork-mvp-v1";
 let state = loadState();
 let web3 = { provider: null, signer: null, contract: null, address: null };
+let connectionVersion = 0;
+
+function visibleProjects() {
+  return state.projects.filter(p => p.mode === (web3.contract ? "web3" : "demo"));
+}
+
+function resetConnection() {
+  connectionVersion++;
+  web3 = { provider: null, signer: null, contract: null, address: null };
+  document.getElementById("walletAddress").textContent = "Not connected";
+  document.getElementById("networkLabel").textContent = "Demo / Not connected";
+  render();
+}
+
+function assertSession(session) {
+  if (session !== web3 || !session.contract) {
+    throw new Error("Wallet connection changed. Reconnect and try again.");
+  }
+}
+
+function actionAllowed(project, milestone) {
+  if (project.mode !== (web3.contract ? "web3" : "demo")) {
+    notify("Switch to the project's mode before using its actions.");
+    return false;
+  }
+  if (project.mode === "web3" && (
+    project.chainId !== CONFIG.chainId ||
+    project.contractAddress?.toLowerCase() !== CONFIG.contractAddress.toLowerCase() ||
+    !Number.isSafeInteger(project.onChainId) || project.onChainId < 1 ||
+    !Number.isSafeInteger(milestone.onChainId) || milestone.onChainId < 0
+  )) {
+    notify("This project is missing a valid connection to the configured escrow.");
+    return false;
+  }
+  return true;
+}
+
+async function prepareWeb3Action(project, session, role) {
+  const network = await session.provider.getNetwork();
+  assertSession(session);
+  if (`0x${network.chainId.toString(16)}` !== CONFIG.chainId) throw new Error("Switch to Sepolia first.");
+  const [client, freelancer, title, exists] = await session.contract.projects(project.onChainId);
+  assertSession(session);
+  if (!exists || title !== project.title || freelancer.toLowerCase() !== project.freelancer.toLowerCase()) {
+    throw new Error("The saved project does not match this escrow's on-chain project.");
+  }
+  const address = session.address.toLowerCase();
+  if (role === "client" && address !== client.toLowerCase()) throw new Error("Only the client wallet can perform this action.");
+  if (role === "freelancer" && address !== freelancer.toLowerCase()) throw new Error("Only the freelancer wallet can perform this action.");
+  if (role === "party" && address !== client.toLowerCase() && address !== freelancer.toLowerCase()) throw new Error("Only a project party can raise a dispute.");
+}
 
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    return saved && Array.isArray(saved.projects) ? saved : { projects: [] };
+    if (!saved || !Array.isArray(saved.projects)) return { projects: [] };
+    // Migrate the old sample's fabricated chain IDs without discarding real projects.
+    saved.projects = saved.projects.filter(p => p && Array.isArray(p.milestones)).map(p => {
+      const oldSample = !p.mode && p.title === "E-commerce Website" &&
+        p.freelancer?.toLowerCase() === "0x71a5a1a1bb4d7f3eb3d2c4a1b7cd2e1f9a8a0c11";
+      const mode = p.mode || (p.onChainId != null && !oldSample ? "web3" : "demo");
+      return { ...p, mode,
+        onChainId: mode === "demo" ? null : p.onChainId,
+        chainId: mode === "web3" ? (p.chainId || CONFIG.chainId) : null,
+        contractAddress: mode === "web3" ? (p.contractAddress || CONFIG.contractAddress) : null,
+        milestones: p.milestones.map(m => ({ ...m, onChainId: mode === "demo" ? null : m.onChainId })) };
+    });
+    return saved;
   } catch {
     return { projects: [] };
   }
@@ -68,10 +131,11 @@ function getStatus(m) {
 
 function render() {
   const projectsEl = document.getElementById("projects");
-  if (!state.projects.length) {
-    projectsEl.innerHTML = `<div class="empty">No projects yet. Create one above or load the sample project.</div>`;
+  const projects = visibleProjects();
+  if (!projects.length) {
+    projectsEl.innerHTML = `<div class="empty">${web3.contract ? "No saved Web3 projects in this browser. Create a project above." : "No demo projects yet. Create one above or load the sample project."}</div>`;
   } else {
-    projectsEl.innerHTML = state.projects.map(project => `
+    projectsEl.innerHTML = projects.map(project => `
       <article class="project-card">
         <div class="project-top">
           <div>
@@ -97,8 +161,8 @@ function render() {
                 <div class="milestone-actions">
                   ${!m.funded && !m.paid ? `<button class="dark" onclick="fundMilestone('${project.id}','${m.id}')">Fund Escrow</button>` : ""}
                   ${m.funded && !m.submitted && !m.disputed && !m.paid ? `<button onclick="submitWork('${project.id}','${m.id}')">Submit Work</button>` : ""}
-                  ${m.submitted && !m.approved && !m.disputed ? `<button class="dark" onclick="approveMilestone('${project.id}','${m.id}')">Approve & Release</button>` : ""}
-                  ${m.submitted && !m.approved && !m.disputed ? `<button onclick="requestChanges('${project.id}','${m.id}')">Request Changes</button>` : ""}
+                  ${m.submitted && !m.approved && !m.disputed && !m.paid ? `<button class="dark" onclick="approveMilestone('${project.id}','${m.id}')">Approve & Release</button>` : ""}
+                  ${m.submitted && !m.approved && !m.disputed && !m.paid ? (project.mode === "demo" ? `<button onclick="requestChanges('${project.id}','${m.id}')">Request Changes (demo)</button>` : `<span class="note">Revision requests are not supported by this deployed contract. Contact the freelancer before approving.</span>`) : ""}
                   ${m.funded && !m.paid && !m.disputed ? `<button onclick="raiseDispute('${project.id}','${m.id}')">Dispute</button>` : ""}
                 </div>
               </div>`;
@@ -107,14 +171,18 @@ function render() {
       </article>`).join("");
   }
 
-  const milestones = state.projects.flatMap(p => p.milestones);
-  document.getElementById("statProjects").textContent = state.projects.length;
+  const milestones = projects.flatMap(p => p.milestones);
+  document.getElementById("statProjects").textContent = projects.length;
   document.getElementById("statFunded").textContent = milestones.filter(m => m.funded && !m.paid).length;
   document.getElementById("statReview").textContent = milestones.filter(m => m.submitted && !m.approved && !m.disputed).length;
   document.getElementById("statPaid").textContent = milestones.filter(m => m.paid).length;
 
   document.getElementById("contractLabel").textContent = CONFIG.contractAddress || "Not configured";
   document.getElementById("modeBadge").textContent = web3.contract ? "Web3 Mode" : "Demo Mode";
+  document.getElementById("votingDemoPanel").hidden = !!web3.contract;
+  document.getElementById("voteDemoBtn").disabled = !!web3.contract;
+  document.getElementById("seedBtn").disabled = !!web3.contract;
+  document.getElementById("disconnectBtn").hidden = !web3.contract;
   renderArbitration();
 }
 
@@ -154,10 +222,10 @@ function extractErrorMessage(error) {
   );
 }
 
-function receiptProjectId(ethers, receipt) {
+function receiptProjectId(contract, receipt) {
   for (const log of receipt.logs || []) {
     try {
-      const parsed = web3.contract.interface.parseLog(log);
+      const parsed = contract.interface.parseLog(log);
       if (parsed?.name === "ProjectCreated") {
         return Number(parsed.args.projectId);
       }
@@ -168,39 +236,47 @@ function receiptProjectId(ethers, receipt) {
   return null;
 }
 
-async function connectWallet() {
+async function connectWallet({ interactive = true } = {}) {
+  resetConnection();
+  const version = connectionVersion;
   if (!window.ethereum) {
-    notify("MetaMask is not available in this browser. Demo Mode is still available.");
+    if (interactive) notify("MetaMask is not available in this browser. Demo Mode is still available.");
     return;
   }
 
   try {
     const ethers = await loadEthers();
-    await window.ethereum.request({ method: "eth_requestAccounts" });
-    web3.provider = new ethers.BrowserProvider(window.ethereum);
-    const network = await web3.provider.getNetwork();
+    const accounts = await window.ethereum.request({ method: interactive ? "eth_requestAccounts" : "eth_accounts" });
+    if (version !== connectionVersion || !accounts?.length) return;
+    let provider = new ethers.BrowserProvider(window.ethereum);
+    const network = await provider.getNetwork();
+    if (version !== connectionVersion) return;
     if (`0x${network.chainId.toString(16)}` !== CONFIG.chainId) {
       try {
+        if (!interactive) throw new Error("Switch to Sepolia and reconnect.");
         await window.ethereum.request({
           method: "wallet_switchEthereumChain",
           params: [{ chainId: CONFIG.chainId }]
         });
-        web3.provider = new ethers.BrowserProvider(window.ethereum);
+        provider = new ethers.BrowserProvider(window.ethereum);
       } catch (switchError) {
         notify("Please switch MetaMask to Sepolia and try again.");
         return;
       }
     }
-    web3.signer = await web3.provider.getSigner();
-    web3.address = await web3.signer.getAddress();
-    document.getElementById("walletAddress").textContent = web3.address;
-
-    const finalNetwork = await web3.provider.getNetwork();
+    const signer = await provider.getSigner();
+    const address = await signer.getAddress();
+    const finalNetwork = await provider.getNetwork();
+    if (version !== connectionVersion) return;
+    if (`0x${finalNetwork.chainId.toString(16)}` !== CONFIG.chainId) throw new Error("Switch to Sepolia and reconnect.");
+    web3 = { provider, signer, address, contract: new ethers.Contract(CONFIG.contractAddress, CONFIG.contractAbi, signer) };
+    document.getElementById("walletAddress").textContent = address;
     document.getElementById("networkLabel").textContent = `Sepolia (${finalNetwork.chainId})`;
-    web3.contract = new ethers.Contract(CONFIG.contractAddress, CONFIG.contractAbi, web3.signer);
     notify(`Wallet connected. Client wallet: ${shortenAddress(web3.address)}. Contract: ${CONFIG.contractAddress}.`);
     render();
   } catch (error) {
+    if (version !== connectionVersion) return;
+    resetConnection();
     console.error(error);
     notify(error?.shortMessage || error?.message || "Wallet connection failed.");
   }
@@ -234,21 +310,15 @@ async function fundMilestone(projectId, milestoneId) {
   const project = state.projects.find(p => p.id === projectId);
   const milestone = project?.milestones.find(m => m.id === milestoneId);
   if (!project || !milestone) return;
+  if (!actionAllowed(project, milestone)) return;
+  const session = web3;
 
-  if (web3.contract) {
-    if (project.onChainId == null || milestone.onChainId == null) {
-      notify("This project is missing its on-chain IDs. Recreate it in Web3 Mode.");
-      return;
-    }
+  if (session.contract) {
     try {
+      await prepareWeb3Action(project, session, "client");
       const ethers = await loadEthers();
-      const [client, freelancer, , exists] = await web3.contract.projects(project.onChainId);
-      if (!exists) throw new Error(`Project #${project.onChainId} does not exist on the deployed contract.`);
-      if (client.toLowerCase() !== web3.address.toLowerCase()) {
-        throw new Error(`Wrong wallet. This milestone must be funded by the client wallet ${client}.`);
-      }
 
-      const onChain = await web3.contract.getMilestone(project.onChainId, milestone.onChainId);
+      const onChain = await session.contract.getMilestone(project.onChainId, milestone.onChainId);
       if (onChain.paid) {
         milestone.paid = true;
         milestone.funded = true;
@@ -277,12 +347,13 @@ async function fundMilestone(projectId, milestoneId) {
 
       notify(`Checking escrow transaction for ${ethers.formatEther(exactAmount)} ETH…`);
       try {
-        await web3.contract.fundMilestone.staticCall(project.onChainId, milestone.onChainId, { value: exactAmount });
+        await session.contract.fundMilestone.staticCall(project.onChainId, milestone.onChainId, { value: exactAmount });
       } catch (preflightError) {
         throw new Error(`Smart contract rejected funding: ${deepRevertMessage(preflightError)}`);
       }
 
-      const tx = await web3.contract.fundMilestone(project.onChainId, milestone.onChainId, { value: exactAmount });
+      assertSession(session);
+      const tx = await session.contract.fundMilestone(project.onChainId, milestone.onChainId, { value: exactAmount });
       notify(`Funding submitted: ${tx.hash.slice(0, 10)}… waiting for confirmation.`);
       await tx.wait();
       notify("Escrow funded on-chain successfully ✅");
@@ -302,14 +373,18 @@ async function submitWork(projectId, milestoneId) {
   const project = state.projects.find(p => p.id === projectId);
   const milestone = project?.milestones.find(m => m.id === milestoneId);
   if (!project || !milestone) return;
+  if (!actionAllowed(project, milestone)) return;
+  const session = web3;
 
   const link = prompt("Enter the work link (GitHub, Figma, Drive, website, etc.):", "https://example.com/work");
   if (!link) return;
   try { new URL(link); } catch { notify("Please enter a valid URL."); return; }
 
-  if (web3.contract) {
+  if (session.contract) {
     try {
-      const tx = await web3.contract.submitWork(project.onChainId, milestone.onChainId, link);
+      await prepareWeb3Action(project, session, "freelancer");
+      assertSession(session);
+      const tx = await session.contract.submitWork(project.onChainId, milestone.onChainId, link);
       notify(`Transaction submitted: ${tx.hash.slice(0, 10)}…`);
       await tx.wait();
     } catch (error) {
@@ -330,10 +405,14 @@ async function approveMilestone(projectId, milestoneId) {
   const project = state.projects.find(p => p.id === projectId);
   const milestone = project?.milestones.find(m => m.id === milestoneId);
   if (!project || !milestone) return;
+  if (!actionAllowed(project, milestone)) return;
+  const session = web3;
 
-  if (web3.contract) {
+  if (session.contract) {
     try {
-      const tx = await web3.contract.approveMilestone(project.onChainId, milestone.onChainId);
+      await prepareWeb3Action(project, session, "client");
+      assertSession(session);
+      const tx = await session.contract.approveMilestone(project.onChainId, milestone.onChainId);
       notify(`Approval submitted: ${tx.hash.slice(0, 10)}…`);
       await tx.wait();
     } catch (error) {
@@ -354,23 +433,32 @@ function requestChanges(projectId, milestoneId) {
   const project = state.projects.find(p => p.id === projectId);
   const milestone = project?.milestones.find(m => m.id === milestoneId);
   if (!project || !milestone) return;
+  if (project.mode !== "demo" || web3.contract) {
+    notify("The deployed escrow does not support revision requests. No on-chain state was changed.");
+    return;
+  }
+  if (!milestone.funded || !milestone.submitted || milestone.paid || milestone.disputed || milestone.approved) return;
   milestone.submitted = false;
   milestone.approved = false;
   saveState();
   render();
-  notify("Changes requested. Freelancer can resubmit the work.");
+  notify("Demo revision requested. Freelancer can resubmit the work.");
 }
 
 async function raiseDispute(projectId, milestoneId) {
   const project = state.projects.find(p => p.id === projectId);
   const milestone = project?.milestones.find(m => m.id === milestoneId);
   if (!project || !milestone) return;
+  if (!actionAllowed(project, milestone)) return;
+  const session = web3;
   const note = prompt("Why is this milestone disputed?", "Work does not match the agreed deliverables.");
   if (!note) return;
 
-  if (web3.contract) {
+  if (session.contract) {
     try {
-      const tx = await web3.contract.raiseDispute(project.onChainId, milestone.onChainId);
+      await prepareWeb3Action(project, session, "party");
+      assertSession(session);
+      const tx = await session.contract.raiseDispute(project.onChainId, milestone.onChainId);
       notify(`Dispute transaction submitted: ${tx.hash.slice(0, 10)}…`);
       await tx.wait();
     } catch (error) {
@@ -384,21 +472,25 @@ async function raiseDispute(projectId, milestoneId) {
   milestone.disputeNote = note;
   saveState();
   render();
-  notify(web3.contract ? "Dispute raised on Sepolia. Payment is locked." : "Dispute raised. Payment is shown as locked.");
+  notify(session.contract ? "Dispute raised on Sepolia. Payment is locked." : "Dispute raised. Payment is shown as locked.");
 }
 
 async function resolveDispute(projectId, milestoneId, payFreelancer) {
   const project = state.projects.find(p => p.id === projectId);
   const milestone = project?.milestones.find(m => m.id === milestoneId);
   if (!project || !milestone || !milestone.disputed) return;
+  if (!actionAllowed(project, milestone)) return;
+  const session = web3;
 
-  if (web3.contract) {
+  if (session.contract) {
     try {
-      const arbitrator = await web3.contract.arbitrator();
-      if (!web3.address || arbitrator.toLowerCase() !== web3.address.toLowerCase()) {
+      await prepareWeb3Action(project, session, null);
+      const arbitrator = await session.contract.arbitrator();
+      if (!session.address || arbitrator.toLowerCase() !== session.address.toLowerCase()) {
         throw new Error("Only the configured arbitrator wallet can resolve this dispute.");
       }
-      const tx = await web3.contract.resolveDispute(project.onChainId, milestone.onChainId, payFreelancer);
+      assertSession(session);
+      const tx = await session.contract.resolveDispute(project.onChainId, milestone.onChainId, payFreelancer);
       notify(`Resolution submitted: ${tx.hash.slice(0, 10)}…`);
       await tx.wait();
     } catch (error) {
@@ -420,7 +512,7 @@ async function resolveDispute(projectId, milestoneId, payFreelancer) {
 function renderArbitration() {
   const el = document.getElementById("arbitrationCases");
   if (!el) return;
-  const cases = state.projects.flatMap(project =>
+  const cases = visibleProjects().flatMap(project =>
     project.milestones
       .filter(m => m.disputed)
       .map(m => ({ project, milestone: m }))
@@ -453,19 +545,20 @@ function seedSample() {
     notify("Sample data is Demo Mode only. Use Create Project for an on-chain project.");
     return;
   }
-  if (state.projects.some(p => p.title === "E-commerce Website")) {
+  if (state.projects.some(p => p.mode === "demo" && p.title === "E-commerce Website")) {
     notify("Sample project is already loaded.");
     return;
   }
   state.projects.unshift({
     id: uid("project"),
-    onChainId: 1,
+    mode: "demo",
+    onChainId: null,
     title: "E-commerce Website",
     freelancer: "0x71A5A1A1bB4d7f3eB3D2c4A1B7cD2e1F9A8a0C11",
     milestones: [
-      { id: uid("ms"), onChainId: 0, title: "Wireframe", amount: 0.01, funded: true, submitted: true, approved: false, paid: false, disputed: false, workLink: "https://example.com/wireframe", disputeNote: "" },
-      { id: uid("ms"), onChainId: 1, title: "Frontend", amount: 0.02, funded: true, submitted: false, approved: false, paid: false, disputed: false, workLink: "", disputeNote: "" },
-      { id: uid("ms"), onChainId: 2, title: "Final Website", amount: 0.03, funded: false, submitted: false, approved: false, paid: false, disputed: false, workLink: "", disputeNote: "" }
+      { id: uid("ms"), onChainId: null, title: "Wireframe", amount: 0.01, funded: true, submitted: true, approved: false, paid: false, disputed: false, workLink: "https://example.com/wireframe", disputeNote: "" },
+      { id: uid("ms"), onChainId: null, title: "Frontend", amount: 0.02, funded: true, submitted: false, approved: false, paid: false, disputed: false, workLink: "", disputeNote: "" },
+      { id: uid("ms"), onChainId: null, title: "Final Website", amount: 0.03, funded: false, submitted: false, approved: false, paid: false, disputed: false, workLink: "", disputeNote: "" }
     ]
   });
   saveState();
@@ -476,12 +569,13 @@ function seedSample() {
 document.getElementById("projectForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   setError("");
+  const session = web3;
 
   const submitButton = event.target.querySelector('button[type="submit"]');
   if (submitButton?.disabled) return;
   if (submitButton) {
     submitButton.disabled = true;
-    submitButton.textContent = web3.contract ? "Creating on Sepolia…" : "Creating…";
+    submitButton.textContent = session.contract ? "Creating on Sepolia…" : "Creating…";
   }
 
   try {
@@ -490,24 +584,30 @@ document.getElementById("projectForm").addEventListener("submit", async (event) 
     const milestones = parseMilestones(document.getElementById("milestonesInput").value);
     if (!title) throw new Error("Project title is required.");
     if (!/^0x[a-fA-F0-9]{40}$/.test(freelancer)) throw new Error("Freelancer wallet must be a valid 42-character 0x address.");
-    if (web3.contract && web3.address && freelancer.toLowerCase() === web3.address.toLowerCase()) {
+    if (session.contract && session.address && freelancer.toLowerCase() === session.address.toLowerCase()) {
       throw new Error("Client and freelancer must use different wallets.");
     }
 
-    if (web3.contract) {
+    if (session.contract) {
       const ethers = await loadEthers();
-      const network = await web3.provider.getNetwork();
+      const network = await session.provider.getNetwork();
       if (`0x${network.chainId.toString(16)}` !== CONFIG.chainId) {
         throw new Error("Please switch MetaMask to Sepolia before creating the project.");
       }
 
       notify("Creating project on Sepolia… approve the first MetaMask transaction.");
-      const tx = await web3.contract.createProject(freelancer, title);
+      assertSession(session);
+      const tx = await session.contract.createProject(freelancer, title);
       notify(`Project transaction submitted: ${tx.hash.slice(0, 10)}… waiting for confirmation.`);
       const receipt = await tx.wait();
-      const onChainId = receiptProjectId(ethers, receipt) ?? Number(await web3.contract.projectCount());
+      const onChainId = receiptProjectId(session.contract, receipt);
+
+      if (onChainId == null) throw new Error("Project confirmed but its ID could not be read from the receipt. Do not create a duplicate project.");
 
       const project = {
+        mode: "web3",
+        chainId: CONFIG.chainId,
+        contractAddress: CONFIG.contractAddress,
         id: uid("project"),
         title,
         freelancer,
@@ -522,7 +622,8 @@ document.getElementById("projectForm").addEventListener("submit", async (event) 
       for (let i = 0; i < milestones.length; i++) {
         const milestone = milestones[i];
         notify(`Adding milestone ${i + 1}/${milestones.length}: ${milestone.title}… approve the MetaMask transaction.`);
-        const mtx = await web3.contract.addMilestone(
+        assertSession(session);
+        const mtx = await session.contract.addMilestone(
           onChainId,
           milestone.title,
           ethers.parseEther(String(milestone.amount))
@@ -532,7 +633,7 @@ document.getElementById("projectForm").addEventListener("submit", async (event) 
         let onChainMilestoneId = i;
         for (const log of mReceipt.logs || []) {
           try {
-            const parsed = web3.contract.interface.parseLog(log);
+            const parsed = session.contract.interface.parseLog(log);
             if (parsed?.name === "MilestoneAdded") {
               onChainMilestoneId = Number(parsed.args.milestoneId);
               break;
@@ -550,7 +651,7 @@ document.getElementById("projectForm").addEventListener("submit", async (event) 
       return;
     }
 
-    state.projects.unshift({ id: uid("project"), title, freelancer, onChainId: null, milestones });
+    state.projects.unshift({ id: uid("project"), mode: "demo", title, freelancer, onChainId: null, milestones });
     saveState();
     render();
     event.target.reset();
@@ -569,22 +670,17 @@ document.getElementById("projectForm").addEventListener("submit", async (event) 
 document.getElementById("connectBtn").addEventListener("click", connectWallet);
 document.getElementById("seedBtn").addEventListener("click", seedSample);
 
-// Reconnect silently if MetaMask is already connected to this site.
+// Invalidate immediately on wallet events, then reconnect without permission prompts.
 async function autoConnectWeb3() {
-  if (!window.ethereum) return;
-  try {
-    const accounts = await window.ethereum.request({ method: "eth_accounts" });
-    if (!accounts || !accounts.length) return;
-    await connectWallet();
-  } catch (error) {
-    console.warn("Auto-connect skipped:", error);
-  }
+  await connectWallet({ interactive: false });
 }
 
 if (window.ethereum?.on) {
-  window.ethereum.on("accountsChanged", () => autoConnectWeb3());
-  window.ethereum.on("chainChanged", () => autoConnectWeb3());
+  window.ethereum.on("accountsChanged", () => { void autoConnectWeb3(); });
+  window.ethereum.on("chainChanged", () => { void autoConnectWeb3(); });
+  window.ethereum.on("disconnect", () => resetConnection());
 }
+document.getElementById("disconnectBtn").addEventListener("click", resetConnection);
 
 window.fundMilestone = fundMilestone;
 window.submitWork = submitWork;
@@ -594,3 +690,4 @@ window.raiseDispute = raiseDispute;
 window.resolveDispute = resolveDispute;
 
 render();
+void autoConnectWeb3();

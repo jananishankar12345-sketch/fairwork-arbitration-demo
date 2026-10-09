@@ -11,7 +11,10 @@
   function loadVotes() {
     try {
       const saved = JSON.parse(localStorage.getItem(KEY));
-      if (saved && typeof saved === "object") return saved;
+      if (saved && typeof saved === "object") {
+        return Object.fromEntries(["arbitrator1", "arbitrator2", "arbitrator3"].map(key =>
+          [key, ["pay", "refund"].includes(saved[key]) ? saved[key] : null]));
+      }
     } catch (_) {}
     return { arbitrator1: null, arbitrator2: null, arbitrator3: null };
   }
@@ -46,7 +49,7 @@
   }
 
   function render() {
-    const el = document.getElementById("arbitrationCases");
+    const el = document.getElementById("votingDemoCases");
     if (!el) return;
     const c = counts();
     const result = decision();
@@ -77,8 +80,8 @@
               <div class="vote-name">${name}</div>
               <div class="vote-choice">Current vote: ${votes[key] === "pay" ? "Pay Freelancer" : votes[key] === "refund" ? "Refund Client" : "No vote"}</div>
               <div class="vote-actions">
-                <button class="${votes[key] === "pay" ? "active" : ""}" data-vote="pay" data-arbitrator="${key}">Pay Freelancer</button>
-                <button class="${votes[key] === "refund" ? "active" : ""}" data-vote="refund" data-arbitrator="${key}">Refund Client</button>
+                <button ${result || votes[key] ? "disabled" : ""} class="${votes[key] === "pay" ? "active" : ""}" data-vote="pay" data-arbitrator="${key}">Pay Freelancer</button>
+                <button ${result || votes[key] ? "disabled" : ""} class="${votes[key] === "refund" ? "active" : ""}" data-vote="refund" data-arbitrator="${key}">Refund Client</button>
               </div>
             </div>`).join("")}
         </div>
@@ -91,7 +94,10 @@
 
     el.querySelectorAll("[data-vote]").forEach(button => {
       button.addEventListener("click", () => {
-        votes[button.dataset.arbitrator] = button.dataset.vote;
+        if (document.getElementById("votingDemoPanel")?.hidden) return;
+        const { arbitrator, vote } = button.dataset;
+        if (decision() || !Object.hasOwn(votes, arbitrator) || votes[arbitrator] || !["pay", "refund"].includes(vote)) return;
+        votes[arbitrator] = vote;
         saveVotes();
         render();
         const resultNow = decision();
@@ -108,6 +114,7 @@
     });
 
     document.getElementById("resetVotingDemo")?.addEventListener("click", () => {
+      if (document.getElementById("votingDemoPanel")?.hidden) return;
       votes = { arbitrator1: null, arbitrator2: null, arbitrator3: null };
       saveVotes();
       render();
@@ -115,6 +122,7 @@
   }
 
   function loadDemo() {
+    if (document.getElementById("votingDemoPanel")?.hidden) return;
     votes = { arbitrator1: null, arbitrator2: null, arbitrator3: null };
     saveVotes();
     render();
@@ -125,7 +133,7 @@
       clearTimeout(window.__fairworkVoteToast);
       window.__fairworkVoteToast = setTimeout(() => toast.classList.add("hidden"), 3200);
     }
-    document.getElementById("arbitrationPanel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    document.getElementById("votingDemoPanel")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   document.addEventListener("DOMContentLoaded", () => {
