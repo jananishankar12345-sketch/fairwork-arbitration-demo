@@ -16,6 +16,7 @@
     <div class="top-actions">
       <span id="modeBadge" class="badge">Demo Mode</span>
       <button id="connectBtn" class="primary">Connect Wallet</button>
+      <button id="disconnectBtn" class="secondary" hidden>Use Demo Mode</button>
     </div>
   </header>
 
@@ -99,6 +100,17 @@
       <p class="note">In Demo Mode, arbitration is simulated for presentation. In Web3 Mode, only the configured arbitrator wallet can resolve an on-chain dispute.</p>
     </section>
 
+    <section class="panel" id="votingDemoPanel">
+      <div class="panel-header">
+        <div>
+          <div class="section-kicker">DEMO ONLY</div>
+          <h2>Three-member voting simulation</h2>
+        </div>
+      </div>
+      <p class="note">This separate example does not resolve project disputes or transfer escrow funds. Each arbitrator votes once. Two matching votes finalize the outcome.</p>
+      <div id="votingDemoCases" class="projects"></div>
+    </section>
+
     <section class="panel technical">
       <div class="panel-header">
         <div>
@@ -116,7 +128,8 @@
   </main>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="app.js?v=6"></script>
-  <script src="arbitration-voting.js?v=1"></script>
+  <script src="app.js?v=7"></script>
+  <script src="arbitration-voting.js?v=2"></script>
 </body>
 </html>
+
